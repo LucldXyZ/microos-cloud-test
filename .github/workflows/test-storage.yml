@@ -10,17 +10,39 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      # Step 1: Connect GitHub to your Acer
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
+      # Step 2: Check GitHub cloud resources
       - name: Show cloud resources
         run: |
+          echo "=== CPU ==="
           nproc
+
+          echo "=== RAM ==="
           free -h
+
+          echo "=== Storage ==="
           df -h /
 
+      # Step 3: Diagnose network connectivity
+      - name: Diagnose Tailscale connection
+        env:
+          WSL_IP: ${{ secrets.MICROOS_WSL_IP }}
+        run: |
+          echo "=== GitHub Tailscale network ==="
+          tailscale netcheck
+
+          echo "=== Test connection to Acer ==="
+          tailscale ping --c 10 "$WSL_IP"
+
+          echo "=== Connection status ==="
+          tailscale status
+
+      # Step 4: Verify access to local storage
       - name: Read local microOS file
         env:
           WSL_IP: ${{ secrets.MICROOS_WSL_IP }}
@@ -31,15 +53,20 @@ jobs:
             "http://${WSL_IP}:8765/hello.txt" \
             -o hello.txt
 
+          echo "=== File contents ==="
           cat hello.txt
+
           grep -Fx \
             "Hello from microOS local storage!" \
             hello.txt
-            
+
+      # Step 5: Benchmark 100 MB transfer
       - name: Benchmark local storage connection
         env:
           WSL_IP: ${{ secrets.MICROOS_WSL_IP }}
         run: |
+          echo "=== Starting 100 MB benchmark ==="
+
           curl --fail --show-error \
             --connect-timeout 15 \
             --max-time 300 \
@@ -47,11 +74,4 @@ jobs:
             -w 'Download speed: %{speed_download} bytes/sec\nTotal time: %{time_total} seconds\n' \
             "http://${WSL_IP}:8765/test100mb.bin"
 
-      - name: Diagnose Tailscale connection
-        env:
-          WSL_IP: ${{ secrets.MICROOS_WSL_IP }}
-        run: |
-          tailscale netcheck
-          tailscale ping --c 10 "$WSL_IP"
-          tailscale status
-
+          echo "=== Benchmark complete ==="
