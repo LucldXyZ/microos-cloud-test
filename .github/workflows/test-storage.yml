@@ -35,3 +35,15 @@ jobs:
           grep -Fx \
             "Hello from microOS local storage!" \
             hello.txt
+            
+      - name: Benchmark local storage connection
+        env:
+          WSL_IP: ${{ secrets.MICROOS_WSL_IP }}
+        run: |
+          curl --fail --show-error \
+            --connect-timeout 15 \
+            --max-time 300 \
+            -o /dev/null \
+            -w 'Download speed: %{speed_download} bytes/sec\nTotal time: %{time_total} seconds\n' \
+            "http://${WSL_IP}:8765/test100mb.bin"
+
