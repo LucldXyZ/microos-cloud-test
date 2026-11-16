@@ -1,0 +1,37 @@
+
+name: Test microOS Cloud Connection
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Show cloud resources
+        run: |
+          nproc
+          free -h
+          df -h /
+
+      - name: Read local microOS file
+        env:
+          WSL_IP: ${{ secrets.MICROOS_WSL_IP }}
+        run: |
+          curl --fail --show-error \
+            --connect-timeout 15 \
+            --max-time 60 \
+            "http://${WSL_IP}:8765/hello.txt" \
+            -o hello.txt
+
+          cat hello.txt
+          grep -Fx \
+            "Hello from microOS local storage!" \
+            hello.txt
