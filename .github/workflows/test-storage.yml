@@ -1,5 +1,5 @@
 
-name: Test microOS Cloud Connection
+name: Test microOS SSHFS Storage
 
 on:
   workflow_dispatch:
@@ -10,68 +10,93 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      # Step 1: Connect GitHub to your Acer
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
-      # Step 2: Check GitHub cloud resources
-      - name: Show cloud resources
+      - name: Install SSHFS
         run: |
-          echo "=== CPU ==="
+          sudo apt-get update
+          sudo apt-get install -y sshfs
+          echo "=== Resources ==="
           nproc
-
-          echo "=== RAM ==="
           free -h
-
-          echo "=== Storage ==="
           df -h /
 
-      # Step 3: Diagnose network connectivity
-      - name: Diagnose Tailscale connection
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.MICROOS_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.MICROOS_SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/microos_key
+          chmod 600 ~/.ssh/microos_key
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Test SSH connection
         env:
           WSL_IP: ${{ secrets.MICROOS_WSL_IP }}
         run: |
-          echo "=== GitHub Tailscale network ==="
-          tailscale netcheck
+          ssh -i ~/.ssh/microos_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            microos-ci@"$WSL_IP" \
+            "cat /home/microos-ci/test-files/hello.txt"
 
-          echo "=== Test connection to Acer ==="
-          tailscale ping --c 10 "$WSL_IP"
-
-          echo "=== Connection status ==="
-          tailscale status
-
-      # Step 4: Verify access to local storage
-      - name: Read local microOS file
+      - name: Mount Acer storage
         env:
           WSL_IP: ${{ secrets.MICROOS_WSL_IP }}
         run: |
-          curl --fail --show-error \
-            --connect-timeout 15 \
-            --max-time 60 \
-            "http://${WSL_IP}:8765/hello.txt" \
-            -o hello.txt
+          mkdir -p ~/microos-remote
 
-          echo "=== File contents ==="
-          cat hello.txt
+          sshfs \
+            microos-ci@"$WSL_IP":/home/microos-ci/test-files \
+            ~/microos-remote \
+            -o IdentityFile="$HOME/.ssh/microos_key" \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o ro \
+            -o reconnect \
+            -o ServerAliveInterval=15
 
-          grep -Fx \
-            "Hello from microOS local storage!" \
-            hello.txt
+          echo "=== Mounted storage ==="
+          mountpoint ~/microos-remote
+          ls -lah ~/microos-remote
+          cat ~/microos-remote/hello.txt
 
-      # Step 5: Benchmark 100 MB transfer
-      - name: Benchmark local storage connection
-        env:
-          WSL_IP: ${{ secrets.MICROOS_WSL_IP }}
+      - name: Benchmark small file operations
         run: |
-          echo "=== Starting 100 MB benchmark ==="
+          python3 - <<'PY'
+          import os
+          import time
 
-          curl --fail --show-error \
-            --connect-timeout 15 \
-            --max-time 300 \
-            -o /dev/null \
-            -w 'Download speed: %{speed_download} bytes/sec\nTotal time: %{time_total} seconds\n' \
-            "http://${WSL_IP}:8765/test100mb.bin"
+          path = os.path.expanduser("~/microos-remote")
 
-          echo "=== Benchmark complete ==="
+          start = time.perf_counter()
+          for i in range(100):
+              os.stat(os.path.join(path, "hello.txt"))
+          elapsed = time.perf_counter() - start
+
+          print(f"100 file metadata operations: {elapsed:.3f} seconds")
+          print(f"Average: {elapsed * 10:.2f} ms per operation")
+
+          start = time.perf_counter()
+          for i in range(100):
+              with open(os.path.join(path, "hello.txt"), "rb") as f:
+                  f.read()
+          elapsed = time.perf_counter() - start
+
+          print(f"100 small file reads: {elapsed:.3f} seconds")
+          PY
+
+      - name: Unmount remote storage
+        if: always()
+        run: |
+          if mountpoint -q ~/microos-remote; then
+            fusermount3 -u ~/microos-remote || \
+              sudo umount ~/microos-remote
+          fi
